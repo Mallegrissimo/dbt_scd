@@ -1,0 +1,17 @@
+config:
+  send_anonymous_usage_stats: False
+
+default:
+  outputs:
+    dev:
+      user: "{{ env_var('dbt_db_user') }}"
+      password: "{{ env_var('dbt_db_user_pwd') }}"
+      database: "{{ env_var('dbt_db_database') }}"
+      schema: "{{ env_var('dbt_db_schema') }}"
+      warehouse: "{{ env_var('dbt_db_warehouse') }}"
+      account: "{{ env_var('dbt_db_account') }}"
+      role: "{{ env_var('dbt_db_role') }}"
+      threads: 20
+      type: snowflake
+
+  target: dev

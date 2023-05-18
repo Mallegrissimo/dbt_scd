@@ -1,0 +1,25 @@
+name: 'dbt_scd'
+version: '0.0.1'
+config-version: 2
+
+profile: 'default'
+
+model-paths: ["models"]
+analysis-paths: ["analyses"]
+test-paths: ["tests"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
+snapshot-paths: ["snapshots"]
+docs-paths: ["docs"]
+
+target-path: "target"
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+vars:
+  hash: MD5
+  etl_max_datetime: '9999-12-31'
+
+models:
+  +copy_grants: true
