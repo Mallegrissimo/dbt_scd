@@ -7,8 +7,10 @@
   {%- set etl_is_current = config.get('etl_is_current', 'etl_is_current') -%}
   {%- set etl_valid_from = config.get('etl_valid_from', 'etl_valid_from') -%}
   {%- set etl_valid_to = config.get('etl_valid_to', 'etl_valid_to') -%}
+  {%- set hash1 = config.get('hash1', 'hash1') -%}
+  {%- set hash2 = config.get('hash2', 'hash2') -%}
   {%- set etl_columns = [etl_is_current, etl_valid_from, etl_valid_to] -%}
-  {%- set hash_columns = ['hash1', 'hash2'] -%}
+  {%- set hash_columns = [hash1, hash2] if scd1_columns|length > 0 else [hash2] -%}
   {%- set hash_columns_with_etl_columns = hash_columns + etl_columns -%}
 
   {%- set scd_settings = {'unique_key': unique_key
@@ -18,6 +20,8 @@
                           , 'etl_is_current': etl_is_current
                           , 'etl_valid_from': etl_valid_from
                           , 'etl_valid_to': etl_valid_to
+                          , 'hash1': hash1
+                          , 'hash2': hash2
                           , 'etl_columns': etl_columns
                           , 'hash_columns': hash_columns
                           , 'hash_columns_with_etl_columns': hash_columns_with_etl_columns} -%}
@@ -105,25 +109,32 @@
   {%- set etl_is_current = scd_settings.get('etl_is_current') -%}
   {%- set etl_valid_from = scd_settings.get('etl_valid_from') -%}
   {%- set etl_valid_to = scd_settings.get('etl_valid_to') -%}
+  {%- set hash1 = scd_settings.get('hash1') -%}
+  {%- set hash2 = scd_settings.get('hash2') -%}
   {%- set scd1_columns = scd_settings.get('scd1_columns') -%}
   {%- set scd2_columns = scd_settings.get('scd2_columns') -%}
   {%- set scd1_columns_csv = quoted(scd1_columns) -%}
   {%- set scd2_columns_csv = quoted(scd2_columns) -%}
+  {%- set is_scd1_enabled = scd1_columns|length > 0  -%}
 
 WITH src as (
 SELECT *
   , ROW_NUMBER() OVER (PARTITION BY {{ quoted(unique_key) }} order by {{ quoted(updated) }} DESC) AS rnk
-  , CONCAT_WS('||', {{ scd1_columns_csv }})   AS hash1
-  , CONCAT_WS('||', {{ scd2_columns_csv }})   AS hash2
+  {%- if is_scd1_enabled -%}
+  , CONCAT_WS('||', {{ scd1_columns_csv }})   AS {{ quoted(hash1) }}
+  {%- endif -%}
+  , CONCAT_WS('||', {{ scd2_columns_csv }})   AS {{ quoted(hash2) }}
   FROM ({{ sql }})
 )
 SELECT  {{ temp_relation_cols_csv }}
-  , hash1
-  , hash2
-  , CASE rnk WHEN 1 THEN 1 ELSE 0 END AS {{ etl_is_current }}
-  , {{ quoted(updated) }}             AS {{ etl_valid_from }}
+  {%- if is_scd1_enabled -%}
+  , {{ quoted(hash1) }}
+  {%- endif -%}
+  , {{ quoted(hash2) }}
+  , CASE rnk WHEN 1 THEN 1 ELSE 0 END AS {{ quoted(etl_is_current) }}
+  , {{ quoted(updated) }}             AS {{ quoted(etl_valid_from) }}
   , LEAD({{ quoted(updated) }}, 1, '9999-12-31') OVER (PARTITION BY {{ quoted(unique_key) }} ORDER BY {{ quoted(updated) }})  
-                                      AS {{ etl_valid_to }}
+                                      AS {{ quoted(etl_valid_to) }}
 FROM src
 {%- endmacro -%}
 
@@ -134,10 +145,13 @@ FROM src
   {%- set etl_is_current = scd_settings.get('etl_is_current') -%}
   {%- set etl_valid_from = scd_settings.get('etl_valid_from') -%}
   {%- set etl_valid_to = scd_settings.get('etl_valid_to') -%}
+  {%- set hash1 = scd_settings.get('hash1') -%}
+  {%- set hash2 = scd_settings.get('hash2') -%}
   {%- set scd1_columns = scd_settings.get('scd1_columns') -%}
   {%- set scd2_columns = scd_settings.get('scd2_columns') -%}
   {%- set scd1_columns_csv = quoted(scd1_columns) -%}
   {%- set scd2_columns_csv = quoted(scd2_columns) -%}
+  {%- set is_scd1_enabled = scd1_columns|length > 0  -%}
   {%- set etl_columns = scd_settings.get('etl_columns') -%}
   {%- set target_relation_columns_subset = target_relation_columns| map(attribute="column") | list | reject('in', etl_columns|map('upper')|list) | list -%}
   {%- set target_relation_columns_subset_csv = quoted(target_relation_columns_subset, 'src') -%}
@@ -146,19 +160,23 @@ MERGE INTO {{ target_relation }}  tgt
 USING (
 SELECT *
   , ROW_NUMBER() OVER (PARTITION BY {{ quoted(unique_key) }} ORDER BY {{ quoted(updated) }} DESC) AS rnk
-  , CONCAT_WS('||', {{ scd1_columns_csv }})   AS hash1
-  , CONCAT_WS('||', {{ scd2_columns_csv }})   AS hash2
+  {%- if is_scd1_enabled -%}
+  , CONCAT_WS('||', {{ scd1_columns_csv }})   AS {{ quoted(hash1) }}
+  {%- endif -%}
+  , CONCAT_WS('||', {{ scd2_columns_csv }})   AS {{ quoted(hash2) }}
   FROM ({{ sql }})
 ) AS src ON src.{{ quoted(unique_key)}} = tgt.{{ quoted(unique_key)}} AND tgt.{{ quoted(etl_is_current) }} = 1 
-WHEN MATCHED AND src.hash2 <> tgt.hash2 THEN
-    UPDATE SET tgt.{{ etl_is_current }} = 0
-      , tgt.{{ etl_valid_to }} = src.{{ quoted(updated) }}
-WHEN MATCHED AND src.hash1 <> tgt.hash1   THEN
+WHEN MATCHED AND src.{{ quoted(hash2) }} <> tgt.{{ quoted(hash2) }} THEN
+    UPDATE SET tgt.{{ quoted(etl_is_current) }} = 0
+      , tgt.{{ quoted(etl_valid_to) }} = src.{{ quoted(updated) }}
+  {%- if is_scd1_enabled -%}
+WHEN MATCHED AND src.{{ quoted(hash1) }} <> tgt.{{ quoted(hash1) }}   THEN
     UPDATE SET tgt.{{ quoted(updated) }} = src.{{ quoted(updated) }}
-      , tgt.hash1 = src.hash1
+      , tgt.{{ quoted(hash1) }} = src.{{ quoted(hash1) }}
       {% for item in scd1_columns -%}
       , tgt.{{quoted(item)}} = src.{{quoted(item)}} {%- if not loop.last -%}, {%- endif -%}
       {%- endfor %}
+  {%- endif -%}
 WHEN NOT MATCHED THEN
     INSERT ({{ relation_cols_csv }}) VALUES({{ target_relation_columns_subset_csv }}, 1, src.{{ quoted(updated) }}, '9999-12-31')
 
@@ -171,11 +189,15 @@ WHEN NOT MATCHED THEN
   {%- set etl_is_current = scd_settings.get('etl_is_current') -%}
   {%- set etl_valid_from = scd_settings.get('etl_valid_from') -%}
   {%- set etl_valid_to = scd_settings.get('etl_valid_to') -%}
+  {%- set hash1 = scd_settings.get('hash1') -%}
+  {%- set hash2 = scd_settings.get('hash2') -%}
   {%- set scd1_columns = scd_settings.get('scd1_columns') -%}
   {%- set scd2_columns = scd_settings.get('scd2_columns') -%}
+  {%- set etl_columns = scd_settings.get('etl_columns') -%}
   {%- set scd1_columns_csv = quoted(scd1_columns) -%}
   {%- set scd2_columns_csv = quoted(scd2_columns) -%}
-  {%- set target_relation_columns_subset = target_relation_columns| map(attribute="column") | list | reject('in', [etl_is_current|upper, etl_valid_from|upper, etl_valid_to|upper]) | list -%}
+  {%- set is_scd1_enabled = scd1_columns|length > 0  -%}
+  {%- set target_relation_columns_subset = target_relation_columns| map(attribute="column") | list | reject('in', etl_columns|map('upper')|list) | list -%}
   {%- set target_relation_columns_subset_csv_w_prefix = quoted(target_relation_columns_subset, 'src') -%}
 
 INSERT INTO {{ target_relation }} ({{ quoted(target_relation_columns_subset) }}, {{  quoted(etl_is_current_row) }}, {{  quoted(etl_valid_from) }}, {{  quoted(etl_valid_to) }})
