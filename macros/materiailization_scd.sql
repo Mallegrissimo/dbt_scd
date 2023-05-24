@@ -139,7 +139,6 @@ FROM src
 {%- endmacro -%}
 
 {%- macro _build_merge_sql(target_relation, target_relation_columns, sql, scd_settings) -%}
-  {%- set relation_cols_csv = target_relation_columns | map(attribute='quoted') | join(', ') -%}
   {%- set updated = scd_settings.get('updated') -%}
   {%- set unique_key = scd_settings.get('unique_key') -%}
   {%- set etl_is_current = scd_settings.get('etl_is_current') -%}
@@ -153,7 +152,9 @@ FROM src
   {%- set scd2_columns_csv = quoted(scd2_columns) -%}
   {%- set is_scd1_enabled = scd1_columns|length > 0  -%}
   {%- set etl_columns = scd_settings.get('etl_columns') -%}
+  {%- set relation_cols_csv = quoted(target_relation_columns | map(attribute="column") | list | reject('in', [hash1]|map('upper')|list) | list)-%}
   {%- set target_relation_columns_subset = target_relation_columns| map(attribute="column") | list | reject('in', etl_columns|map('upper')|list) | list -%}
+  {%- set target_relation_columns_subset = target_relation_columns_subset | reject('in', [hash1]|map('upper')|list) | list -%}
   {%- set target_relation_columns_subset_csv = quoted(target_relation_columns_subset, 'src') -%}
 
 MERGE INTO {{ target_relation }}  tgt
@@ -176,7 +177,7 @@ WHEN MATCHED AND src.{{ quoted(hash1) }} <> tgt.{{ quoted(hash1) }}   THEN
       {% for item in scd1_columns -%}
       , tgt.{{quoted(item)}} = src.{{quoted(item)}} {%- if not loop.last -%}, {%- endif -%}
       {%- endfor %}
-  {%- endif -%}
+  {%- endif %}
 WHEN NOT MATCHED THEN
     INSERT ({{ relation_cols_csv }}) VALUES({{ target_relation_columns_subset_csv }}, 1, src.{{ quoted(updated) }}, '9999-12-31')
 
@@ -198,6 +199,7 @@ WHEN NOT MATCHED THEN
   {%- set scd2_columns_csv = quoted(scd2_columns) -%}
   {%- set is_scd1_enabled = scd1_columns|length > 0  -%}
   {%- set target_relation_columns_subset = target_relation_columns| map(attribute="column") | list | reject('in', etl_columns|map('upper')|list) | list -%}
+  {%- set target_relation_columns_subset = target_relation_columns_subset | reject('in', [hash1]|map('upper')|list) | list -%}
   {%- set target_relation_columns_subset_csv_w_prefix = quoted(target_relation_columns_subset, 'src') -%}
 
 INSERT INTO {{ target_relation }} ({{ quoted(target_relation_columns_subset) }}, {{  quoted(etl_is_current_row) }}, {{  quoted(etl_valid_from) }}, {{  quoted(etl_valid_to) }})
