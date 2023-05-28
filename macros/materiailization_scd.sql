@@ -162,7 +162,7 @@ USING (
 SELECT *
   , ROW_NUMBER() OVER (PARTITION BY {{ quoted(unique_key) }} ORDER BY {{ quoted(updated) }} DESC) AS rnk
   {%- if is_scd1_enabled -%}
-  , CONCAT_WS('||', {{ scd1_columns_csv }})   AS {{ quoted(hash1) }}
+  , {{ hash(scd1_columns, hash1) }})
   {%- endif -%}
   , CONCAT_WS('||', {{ scd2_columns_csv }})   AS {{ quoted(hash2) }}
   FROM ({{ sql }})
@@ -223,8 +223,9 @@ FROM src
 
 {%- macro quoted(args, col_prefix='') -%}
   {%- set items = [args] if args is string  else args  -%}
+  {%- set quote_str ='"' -%}
   {%- for item in items -%}
-    {{ col_prefix~'.' if col_prefix else ''}}"{{item|upper}}"
-    {%- if not loop.last  -%}, {% endif-%}
+    {{- col_prefix~'.' if col_prefix else '' ~ quote_str ~ item|upper ~ quote_str -}}
+    {{- ',' if not loop.last  -}}
   {%- endfor -%}
 {%- endmacro -%}
