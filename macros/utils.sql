@@ -1,8 +1,8 @@
 {%- macro hash(columns, alias=None) -%}
     {%- set columns = [columns] if columns is string else columns|sort -%}
-    {%- set hash_algo = config.get('hash_algo',  'SHA2_BINARY') -%}
-    {%- set string_concat_delimeter = config.get('string_concat_delimeter', '||') -%}
-    {%- set null_value_string = config.get('null_value_string', 'NVL') -%}
+    {%- set hash_algo = var('dbt_scd__hash_algo',  'SHA2_BINARY') -%}
+    {%- set string_concat_delimeter = config.get('dbt_scd__string_concat_delimeter', '||') -%}
+    {%- set null_value_string = config.get('dbt_scd__null_value_string', 'NVL') -%}
     {%- set hash_size = 256 -%}
     {%- set column_tmpl = "IFNULL(NULLIF(UPPER(TRIM(CAST([EXPRESSION] AS VARCHAR))), ''), '{}')".format(null_value_string) -%}
 
@@ -12,7 +12,6 @@
         {{- '\n    , '~ column_tmpl | replace('[EXPRESSION]', quoted(column)) -}}
     {%- endfor -%}
     {{- '\n)) AS BINARY({}))'.format(hash_size) ~ ' AS {}'.format(quoted(alias) if alias else '' ) -}}
-
 {%- endmacro -%}
 
 
