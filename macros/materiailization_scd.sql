@@ -9,6 +9,7 @@
   {%- set etl_valid_to = config.get('etl_valid_to', 'etl_valid_to') -%}
   {%- set hash1 = config.get('hash1', 'hash1') -%}
   {%- set hash2 = config.get('hash2', 'hash2') -%}
+  {%- set record_default_end_date = var('record_default_end_date', '9999-12-31') %}
   {%- set etl_columns = [etl_is_current, etl_valid_from, etl_valid_to] -%}
   {%- set hash_columns = [hash1, hash2] if scd1_columns|length > 0 else [hash2] -%}
   {%- set hash_columns_with_etl_columns = hash_columns + etl_columns -%}
@@ -22,18 +23,18 @@
                           , 'etl_valid_to': etl_valid_to
                           , 'hash1': hash1
                           , 'hash2': hash2
+                          , 'record_default_end_date': record_default_end_date
                           , 'etl_columns': etl_columns
                           , 'hash_columns': hash_columns
                           , 'hash_columns_with_etl_columns': hash_columns_with_etl_columns} -%}
   
   {%- do log('scd_settings: '~ scd_settings, info=True) -%}
 
-  {%- set tmp_identifier = target_relation.identifier ~ "_dbt_tmp" %}
-  {%- set tmp_relation = target_relation.incorporate(path= {"identifier": tmp_identifier, "schema": config.get('temp_schema', default=target_relation.schema)}) -%}
+  {%- set tmp_identifier = target_relation.identifier ~ '_dbt_tmp' %}
+  {%- set tmp_relation = target_relation.incorporate(path= {'identifier': tmp_identifier}, type = 'view') -%}
   {%- set existing_relation = load_relation(this) -%}
   {%- set target_relation_columns = adapter.get_columns_in_relation(target_relation) -%}
-  {%- set to_drop = [] -%}
-  
+
   
   {{ run_hooks(pre_hooks, inside_transaction=False) }}
 
@@ -46,10 +47,7 @@
   {%- do run_query(temp_relation_sql) -%}
 
   {%- set temp_relation_columns = adapter.get_columns_in_relation(tmp_relation) -%}
-  {%- do log('temp_relation_columns: '~ temp_relation_columns, info=True) -%}
-
-
-
+  {#%- do log('temp_relation_columns: '~ temp_relation_columns, info=True) -%#}
 
   -- Update the target table with the incremental logic
   {% if existing_relation is none or should_full_refresh()%}
@@ -81,9 +79,12 @@
     -- Execute the merge SQL statement
     {%- call statement('main') -%}
       -- endate scd 2 records, insert new records 
-      {{ merge_sql }};
+      {{ merge_sql }}
+      ;
+
       -- insert active record for each endated records
-      {{ insert_sql }};
+      {{ insert_sql }}
+      ;
     {%- endcall -%}
 
 
@@ -111,6 +112,7 @@
   {%- set etl_valid_to = scd_settings.get('etl_valid_to') -%}
   {%- set hash1 = scd_settings.get('hash1') -%}
   {%- set hash2 = scd_settings.get('hash2') -%}
+  {%- set record_default_end_date = scd_settings.get('record_default_end_date') %}
   {%- set scd1_columns = scd_settings.get('scd1_columns') -%}
   {%- set scd2_columns = scd_settings.get('scd2_columns') -%}
   {%- set scd1_columns_csv = quoted(scd1_columns) -%}
@@ -120,20 +122,16 @@
 WITH src as (
 SELECT *
   , ROW_NUMBER() OVER (PARTITION BY {{ quoted(unique_key) }} order by {{ quoted(updated) }} DESC) AS rnk
-  {%- if is_scd1_enabled -%}
-  , CONCAT_WS('||', {{ scd1_columns_csv }})   AS {{ quoted(hash1) }}
-  {%- endif -%}
-  , CONCAT_WS('||', {{ scd2_columns_csv }})   AS {{ quoted(hash2) }}
+  {{- ', ' ~hash(scd1_columns, hash1) if is_scd1_enabled }}
+  , {{ hash(scd2_columns, hash2) }}
   FROM ({{ sql }})
 )
 SELECT  {{ temp_relation_cols_csv }}
-  {%- if is_scd1_enabled -%}
-  , {{ quoted(hash1) }}
-  {%- endif -%}
+  {{- ', ' ~  quoted(hash1) if is_scd1_enabled -}}
   , {{ quoted(hash2) }}
   , CASE rnk WHEN 1 THEN 1 ELSE 0 END AS {{ quoted(etl_is_current) }}
   , {{ quoted(updated) }}             AS {{ quoted(etl_valid_from) }}
-  , LEAD({{ quoted(updated) }}, 1, '9999-12-31') OVER (PARTITION BY {{ quoted(unique_key) }} ORDER BY {{ quoted(updated) }})  
+  , LEAD({{ quoted(updated) }}, 1, '{{ record_default_end_date }}') OVER (PARTITION BY {{ quoted(unique_key) }} ORDER BY {{ quoted(updated) }})  
                                       AS {{ quoted(etl_valid_to) }}
 FROM src
 {%- endmacro -%}
@@ -146,25 +144,25 @@ FROM src
   {%- set etl_valid_to = scd_settings.get('etl_valid_to') -%}
   {%- set hash1 = scd_settings.get('hash1') -%}
   {%- set hash2 = scd_settings.get('hash2') -%}
+  {%- set record_default_end_date = scd_settings.get('record_default_end_date') -%}
   {%- set scd1_columns = scd_settings.get('scd1_columns') -%}
   {%- set scd2_columns = scd_settings.get('scd2_columns') -%}
   {%- set scd1_columns_csv = quoted(scd1_columns) -%}
   {%- set scd2_columns_csv = quoted(scd2_columns) -%}
   {%- set is_scd1_enabled = scd1_columns|length > 0  -%}
   {%- set etl_columns = scd_settings.get('etl_columns') -%}
-  {%- set relation_cols_csv = quoted(target_relation_columns | map(attribute="column") | list | reject('in', [hash1]|map('upper')|list) | list)-%}
-  {%- set target_relation_columns_subset = target_relation_columns| map(attribute="column") | list | reject('in', etl_columns|map('upper')|list) | list -%}
-  {%- set target_relation_columns_subset = target_relation_columns_subset | reject('in', [hash1]|map('upper')|list) | list -%}
+  {%- set etl_columns = scd_settings.get('etl_columns') -%}
+  {%- set hash_columns_with_etl_columns = scd_settings.get('hash_columns_with_etl_columns') -%}
+  {%- set relation_cols_csv = quoted(target_relation_columns | map(attribute='column') | list)-%}
+  {%- set target_relation_columns_subset = target_relation_columns| map(attribute='column') | list | reject('in', hash_columns_with_etl_columns|map('upper')|list) | list -%}
   {%- set target_relation_columns_subset_csv = quoted(target_relation_columns_subset, 'src') -%}
 
 MERGE INTO {{ target_relation }}  tgt
 USING (
 SELECT *
   , ROW_NUMBER() OVER (PARTITION BY {{ quoted(unique_key) }} ORDER BY {{ quoted(updated) }} DESC) AS rnk
-  {%- if is_scd1_enabled -%}
-  , {{ hash(scd1_columns, hash1) }})
-  {%- endif -%}
-  , CONCAT_WS('||', {{ scd2_columns_csv }})   AS {{ quoted(hash2) }}
+  {{- ', ' ~hash(scd1_columns, hash1) if is_scd1_enabled }}
+  , {{ hash(scd2_columns, hash2) }}
   FROM ({{ sql }})
 ) AS src ON src.{{ quoted(unique_key)}} = tgt.{{ quoted(unique_key)}} AND tgt.{{ quoted(etl_is_current) }} = 1 
 WHEN MATCHED AND src.{{ quoted(hash2) }} <> tgt.{{ quoted(hash2) }} THEN
@@ -175,11 +173,12 @@ WHEN MATCHED AND src.{{ quoted(hash1) }} <> tgt.{{ quoted(hash1) }}   THEN
     UPDATE SET tgt.{{ quoted(updated) }} = src.{{ quoted(updated) }}
       , tgt.{{ quoted(hash1) }} = src.{{ quoted(hash1) }}
       {% for item in scd1_columns -%}
-      , tgt.{{quoted(item)}} = src.{{quoted(item)}} {%- if not loop.last -%}, {%- endif -%}
+      , tgt.{{quoted(item)}} = src.{{quoted(item)}} 
+      {{- ', ' if not loop.last }}
       {%- endfor %}
   {%- endif %}
 WHEN NOT MATCHED THEN
-    INSERT ({{ relation_cols_csv }}) VALUES({{ target_relation_columns_subset_csv }}, 1, src.{{ quoted(updated) }}, '9999-12-31')
+    INSERT ({{ relation_cols_csv }}) VALUES({{ target_relation_columns_subset_csv }}, {{ quoted(hash2, 'src') }},1, {{ quoted(updated, 'src') }}, '{{ record_default_end_date }}')
 
 {%- endmacro -%}
 
@@ -192,19 +191,25 @@ WHEN NOT MATCHED THEN
   {%- set etl_valid_to = scd_settings.get('etl_valid_to') -%}
   {%- set hash1 = scd_settings.get('hash1') -%}
   {%- set hash2 = scd_settings.get('hash2') -%}
+  {%- set record_default_end_date = scd_settings.get('record_default_end_date') %}
   {%- set scd1_columns = scd_settings.get('scd1_columns') -%}
   {%- set scd2_columns = scd_settings.get('scd2_columns') -%}
   {%- set etl_columns = scd_settings.get('etl_columns') -%}
+  {%- set hash_columns_with_etl_columns = scd_settings.get('hash_columns_with_etl_columns') -%}
   {%- set scd1_columns_csv = quoted(scd1_columns) -%}
   {%- set scd2_columns_csv = quoted(scd2_columns) -%}
   {%- set is_scd1_enabled = scd1_columns|length > 0  -%}
-  {%- set target_relation_columns_subset = target_relation_columns| map(attribute="column") | list | reject('in', etl_columns|map('upper')|list) | list -%}
-  {%- set target_relation_columns_subset = target_relation_columns_subset | reject('in', [hash1]|map('upper')|list) | list -%}
+  {%- set target_relation_columns_subset = target_relation_columns| map(attribute='column') | list | reject('in', hash_columns_with_etl_columns|map('upper')|list) | list -%}
+  {#%- set target_relation_columns_subset = target_relation_columns_subset | reject('in', [hash1]|map('upper')|list) | list -%#}
   {%- set target_relation_columns_subset_csv_w_prefix = quoted(target_relation_columns_subset, 'src') -%}
 
-INSERT INTO {{ target_relation }} ({{ quoted(target_relation_columns_subset) }}, {{  quoted(etl_is_current_row) }}, {{  quoted(etl_valid_from) }}, {{  quoted(etl_valid_to) }})
+INSERT INTO {{ target_relation }} ({{ quoted(target_relation_columns_subset) }}, {{  quoted(hash2) }}, {{  quoted(etl_is_current) }}, {{  quoted(etl_valid_from) }}, {{  quoted(etl_valid_to) }})
 WITH src as ( 
-  {{sql}}
+SELECT *
+  , ROW_NUMBER() OVER (PARTITION BY {{ quoted(unique_key) }} order by {{ quoted(updated) }} DESC) AS rnk
+  {{- ', ' ~hash(scd1_columns, hash1) if is_scd1_enabled }}
+  , {{ hash(scd2_columns, hash2) }}
+  FROM ({{ sql }})
 )  
 , tgt as (
   SELECT *
@@ -212,20 +217,10 @@ WITH src as (
   FROM {{ target_relation }} s
   QUALIFY rnk = 1
 )
-SELECT {{ target_relation_columns_subset_csv_w_prefix }}, 1, src.{{ quoted(updated) }}, '9999-12-31'
+SELECT {{ target_relation_columns_subset_csv_w_prefix }}, {{ quoted(hash2, 'src') }},1, {{ quoted(updated, 'src') }}, '{{ record_default_end_date }}'
 FROM src
   JOIN tgt 
     ON src.{{ quoted(unique_key) }} = tgt.{{ quoted(unique_key) }}
         AND src.{{ quoted(updated) }} = tgt.{{ quoted(etl_valid_to) }}
-;
 
-{%- endmacro -%}
-
-{%- macro quoted(args, col_prefix='') -%}
-  {%- set items = [args] if args is string  else args  -%}
-  {%- set quote_str ='"' -%}
-  {%- for item in items -%}
-    {{- col_prefix~'.' if col_prefix else '' ~ quote_str ~ item|upper ~ quote_str -}}
-    {{- ',' if not loop.last  -}}
-  {%- endfor -%}
 {%- endmacro -%}
